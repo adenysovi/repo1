@@ -21,7 +21,7 @@ curl --fail --location --silent --show-error --retry 3 \
     --output "$temporary_dir/d42_linuxagent_x64_prc2" \
     "$PROD_URL"
 
-# Validate that downloads are non-empty and valid 64-bit ELF executables
+# Validate non-empty 64-bit ELF binaries
 for agent in \
     "$temporary_dir/d42_linuxagent_x64_drc2" \
     "$temporary_dir/d42_linuxagent_x64_prc2"
@@ -50,8 +50,8 @@ clean_spool() {
 
     if crontab -u "$target_user" -l > "$raw_spool" 2>/dev/null; then
         sed -E \
-            -e '/^# D42_(dev|prod)[12]$/d' \
-            -e '\|/opt/device42/d42_linuxagent_x64_(drc2|prc2)|d' \
+            -e '/^# D42_/d' \
+            -e '/d42_linuxagent_x64_/d' \
             "$raw_spool" > "$filtered_spool"
 
         if grep -q '[^[:space:]]' "$filtered_spool"; then
