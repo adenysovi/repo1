@@ -13,13 +13,8 @@ temporary_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_dir"' EXIT
 
 echo "[*] Downloading Device42 agents from GitHub..."
-curl --fail --location --silent --show-error --retry 3 \
-    --output "$temporary_dir/d42_linuxagent_x64_drc2" \
-    "$DEV_URL"
-
-curl --fail --location --silent --show-error --retry 3 \
-    --output "$temporary_dir/d42_linuxagent_x64_prc2" \
-    "$PROD_URL"
+curl --fail --location --silent --show-error --retry 3 --output "$temporary_dir/d42_linuxagent_x64_drc2" "$DEV_URL"
+curl --fail --location --silent --show-error --retry 3 --output "$temporary_dir/d42_linuxagent_x64_prc2" "$PROD_URL"
 
 # Validate non-empty 64-bit ELF binaries
 for agent in \
