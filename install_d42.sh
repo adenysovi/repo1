@@ -1,86 +1,125 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/bin/bash 
 
-readonly INSTALL_DIR="/opt/device42"
-readonly DEV_AGENT="$INSTALL_DIR/d42_linuxagent_x64_drc2"
-readonly PROD_AGENT="$INSTALL_DIR/d42_linuxagent_x64_prc2"
-readonly CRON_FILE="/etc/cron.d/device42-agents"
+set -Eeuo pipefail 
 
-readonly DEV_URL="https://raw.githubusercontent.com/adenysovi/repo1/main/d42_linuxagent_x64_drc2"
-readonly PROD_URL="https://raw.githubusercontent.com/adenysovi/repo1/main/d42_linuxagent_x64_prc2"
+[[ $EUID -eq 0 ]] || { echo "ERROR: Run as root." >&2; exit 1; } 
 
-temporary_dir="$(mktemp -d)"
-trap 'rm -rf -- "$temporary_dir"' EXIT
+for cmd in curl crontab flock install od cmp; do 
 
-echo "[*] Downloading Device42 agents from GitHub..."
-curl --fail --location --silent --show-error --retry 3 \
-    --output "$temporary_dir/d42_linuxagent_x64_drc2" \
-    "$DEV_URL"
+    command -v "$cmd" >/dev/null || { 
 
-curl --fail --location --silent --show-error --retry 3 \
-    --output "$temporary_dir/d42_linuxagent_x64_prc2" \
-    "$PROD_URL"
+        echo "ERROR: Missing command: $cmd" >&2 
 
-# Validate non-empty 64-bit ELF binaries
-for agent in \
-    "$temporary_dir/d42_linuxagent_x64_drc2" \
-    "$temporary_dir/d42_linuxagent_x64_prc2"
-do
-    [[ -s "$agent" ]] || { echo "ERROR: Empty download: $agent" >&2; exit 1; }
-    magic="$(od -An -tx1 -N4 "$agent" | tr -d '[:space:]')"
-    [[ "$magic" == "7f454c46" ]] || { echo "ERROR: Download is not an ELF executable: $agent" >&2; exit 1; }
-done
+        exit 1 
 
-# Ensure Dev and Prod are distinct binaries
-if cmp --silent "$temporary_dir/d42_linuxagent_x64_drc2" "$temporary_dir/d42_linuxagent_x64_prc2"; then
-    echo "ERROR: Dev and Prod downloads are identical." >&2
-    exit 1
-fi
+    } 
 
-echo "[*] Installing Device42 agents to $INSTALL_DIR..."
-install -d -o root -g root -m 0755 "$INSTALL_DIR"
-install -o root -g root -m 0755 "$temporary_dir/d42_linuxagent_x64_drc2" "$DEV_AGENT"
-install -o root -g root -m 0755 "$temporary_dir/d42_linuxagent_x64_prc2" "$PROD_AGENT"
+done 
 
-echo "[*] Cleaning legacy Device42 entries from user and root crontabs..."
-clean_spool() {
-    local target_user="$1"
-    local raw_spool="$temporary_dir/${target_user}-crontab"
-    local filtered_spool="$temporary_dir/${target_user}-clean"
+dir="/opt/device42" 
 
-    if crontab -u "$target_user" -l > "$raw_spool" 2>/dev/null; then
-        sed -E \
-            -e '/^# D42_/d' \
-            -e '/d42_linuxagent_x64_/d' \
-            "$raw_spool" > "$filtered_spool"
+base="https://raw.githubusercontent.com/adenysovi/repo1/main" 
 
-        if grep -q '[^[:space:]]' "$filtered_spool"; then
-            crontab -u "$target_user" "$filtered_spool"
-        else
-            crontab -u "$target_user" -r 2>/dev/null || true
-        fi
-    fi
-}
+tmp="$(mktemp -d)" 
 
-clean_spool "root"
-if id -u "adenysov" >/dev/null 2>&1; then
-    clean_spool "adenysov"
-fi
+trap 'rm -rf -- "$tmp"' EXIT 
 
-echo "[*] Installing system cron schedule to $CRON_FILE..."
-cat > "$temporary_dir/device42-agents" <<'CRON_EOF'
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+flags='-quiet -discover-last-login -ignore-ipv6 -hostname-precedence -device-name-format 3 -ignore-domain -skip-virtual-machines -new-device-object-category "EUC" -device-tags "EUC_ubuntu"' 
 
-# Device42 development (drc2)
-47 9 * * * root /usr/bin/flock -n /run/d42-dev.lock /opt/device42/d42_linuxagent_x64_drc2 -quiet -discover-last-login -ignore-ipv6 -hostname-precedence -device-name-format 3 -ignore-domain -skip-virtual-machines -new-device-object-category "EUC" -device-tags "EUC_ubuntu" >> /var/log/d42_agent_dev.log 2>&1
-@reboot root /bin/sleep 900 && /usr/bin/flock -n /run/d42-dev.lock /opt/device42/d42_linuxagent_x64_drc2 -quiet -discover-last-login -ignore-ipv6 -hostname-precedence -device-name-format 3 -ignore-domain -skip-virtual-machines -new-device-object-category "EUC" -device-tags "EUC_ubuntu" >> /var/log/d42_agent_dev.log 2>&1
+# Download and validate both agents before installing either. 
 
-# Device42 production (prc2)
-57 9 * * * root /usr/bin/flock -n /run/d42-prod.lock /opt/device42/d42_linuxagent_x64_prc2 -quiet -discover-last-login -ignore-ipv6 -hostname-precedence -device-name-format 3 -ignore-domain -skip-virtual-machines -new-device-object-category "EUC" -device-tags "EUC_ubuntu" >> /var/log/d42_agent_prod.log 2>&1
-@reboot root /bin/sleep 900 && /usr/bin/flock -n /run/d42-prod.lock /opt/device42/d42_linuxagent_x64_prc2 -quiet -discover-last-login -ignore-ipv6 -hostname-precedence -device-name-format 3 -ignore-domain -skip-virtual-machines -new-device-object-category "EUC" -device-tags "EUC_ubuntu" >> /var/log/d42_agent_prod.log 2>&1
-CRON_EOF
+for suffix in drc2 prc2; do 
 
-install -o root -g root -m 0644 "$temporary_dir/device42-agents" "$CRON_FILE"
+    name="d42_linuxagent_x64_$suffix" 
 
-echo "[*] Device42 agents and cron schedules installed successfully."
+    echo "[*] Downloading $name" 
+
+    curl -fsSL --retry 3 --connect-timeout 20 --max-time 180 \ 
+
+        "$base/$name" -o "$tmp/$name" 
+
+  
+
+    [[ "$(od -An -tx1 -N5 "$tmp/$name" | tr -d '[:space:]')" == "7f454c4602" ]] || { 
+
+        echo "ERROR: $name is not a 64-bit ELF file." >&2 
+
+        exit 1 
+
+    } 
+
+done 
+
+if cmp -s "$tmp/d42_linuxagent_x64_drc2" "$tmp/d42_linuxagent_x64_prc2"; then 
+
+    echo "ERROR: Dev and Prod binaries are identical." >&2 
+
+    exit 1 
+
+fi 
+
+install -d -o root -g root -m 0755 "$dir" 
+
+for suffix in drc2 prc2; do 
+
+    name="d42_linuxagent_x64_$suffix" 
+
+    install -o root -g root -m 0755 "$tmp/$name" "$dir/$name" 
+
+done 
+
+# Remove matching legacy entries, preserving unrelated cron jobs. 
+
+for user in root adenysov; do 
+
+    if id "$user" >/dev/null 2>&1 && 
+
+       crontab -u "$user" -l > "$tmp/old-cron" 2>/dev/null; then 
+
+        sed '/^# D42_/d; /d42_linuxagent_x64_/d' \ 
+
+            "$tmp/old-cron" > "$tmp/clean-cron" 
+
+        crontab -u "$user" "$tmp/clean-cron" 
+
+    fi 
+
+done 
+
+# Build daily and boot schedules. 
+
+cat > "$tmp/schedule" <<'EOF' 
+
+SHELL=/bin/bash 
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin 
+
+EOF 
+
+for env in dev prod; do 
+
+    if [[ $env == dev ]]; then 
+
+        suffix=drc2 
+
+        minute=47 
+
+    else 
+
+        suffix=prc2 
+
+        minute=57 
+
+    fi 
+
+    job="/usr/bin/flock -n /run/d42-$env.lock $dir/d42_linuxagent_x64_$suffix $flags >> /var/log/d42_agent_$env.log 2>&1" 
+
+    printf '%s 9 * * * root %s\n' "$minute" "$job" >> "$tmp/schedule" 
+
+    printf '@reboot root /bin/sleep 900 && %s\n' "$job" >> "$tmp/schedule" 
+
+done 
+
+install -o root -g root -m 0644 "$tmp/schedule" /etc/cron.d/device42-agents 
+
+echo "[OK] Device42 Dev/Prod agents and schedules installed." 
